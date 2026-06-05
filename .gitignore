@@ -1,0 +1,22 @@
+# Secrets — NEVER commit these
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Logs — contain operational data
+*.log
+
+# Virtual environments
+venv/
+.env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ChromaDB local data
+chroma/
