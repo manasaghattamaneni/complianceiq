@@ -72,7 +72,7 @@ complianceiq/
 
 ### 1. Clone and install
 ```bash
-git clone https://github.com/<your-username>/complianceiq.git
+git clone https://github.com/manasaghattamaneni/complianceiq.git
 cd complianceiq
 pip install -r requirements.txt
 ```
