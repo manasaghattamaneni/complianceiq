@@ -164,3 +164,22 @@ def test_multi_doc_search(repo):
     # PCI doc should score higher for password question
     doc_names = [r.doc_name for r in results]
     assert "pci.txt" in doc_names
+
+
+def test_restore_collections_round_trips_metadata(repo):
+    """pages/file_type persisted on store should survive restore."""
+    text = "Compliance requirement text. " * 50
+    chunks = split_into_chunks(text)
+    repo.store_document(
+        "restore_doc", chunks, "report.pdf", pages=7, file_type="pdf"
+    )
+
+    # A fresh repository instance reads from the same persistent store
+    fresh = DocumentRepository()
+    restored = fresh.restore_collections()
+
+    match = next(d for d in restored if d["doc_id"] == "restore_doc")
+    assert match["doc_name"] == "report.pdf"
+    assert match["pages"] == 7
+    assert match["file_type"] == "pdf"
+    assert match["chunks"] == len(chunks)

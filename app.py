@@ -23,36 +23,56 @@ def init_session():
         _ = st.secrets["ANTHROPIC_API_KEY"]
     except Exception:
         st.error(
-            "🔒 Missing API key. Add ANTHROPIC_API_KEY " "to .streamlit/secrets.toml"
+            "🔒 Missing API key. Add ANTHROPIC_API_KEY "
+            "to .streamlit/secrets.toml"
         )
         st.stop()
 
+    # Guarded init — only runs once per session
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
+
     if "repo" not in st.session_state:
         st.session_state.repo = DocumentRepository()
-        st.session_state.repo.restore_collections()
+        if "documents" not in st.session_state:
+            st.session_state.documents = {}
+        restored = st.session_state.repo.restore_collections()
+        for i, doc in enumerate(restored[:2]):
+            slot = f"doc{i + 1}"
+            display_name = doc["doc_name"]
+            if len(display_name) > 30:
+                display_name = display_name[:27] + "..."
+            st.session_state.documents[slot] = {
+                "id": doc["doc_id"],
+                "name": doc["doc_name"],
+                "display_name": display_name,
+                "pages": doc["pages"],
+                "chunks": doc["chunks"],
+                "type": doc["file_type"].upper()
+            }
+        if restored:
+            logger.info(
+                "ui_documents_restored",
+                count=len(restored)
+            )
+
     if "engine" not in st.session_state:
         st.session_state.engine = None
-
-    defaults = {
-        "session_id": str(uuid.uuid4()),
-        "repo": DocumentRepository(),
-        "engine": None,
-        "metrics": SessionMetrics(),
-        "messages": [],
-        "documents": {},
-        "feedback": {},
-        "last_request": 0.0,
-        "uploader_key": 0,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    if "metrics" not in st.session_state:
+        st.session_state.metrics = SessionMetrics()
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "documents" not in st.session_state:
+        st.session_state.documents = {}
+    if "feedback" not in st.session_state:
+        st.session_state.feedback = {}
+    if "last_request" not in st.session_state:
+        st.session_state.last_request = 0.0
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
 
     if st.session_state.engine is None:
         st.session_state.engine = AIEngine(st.session_state.repo)
-
 
 init_session()
 
@@ -85,7 +105,13 @@ def process_upload(uploaded_file, doc_slot: str):
         with st.spinner("Indexing document..."):
             chunks = split_into_chunks(text, file_type=file_type)
             doc_id = f"{doc_slot}_{st.session_state.session_id}"
-            st.session_state.repo.store_document(doc_id, chunks, uploaded_file.name)
+            st.session_state.repo.store_document(
+                doc_id,
+                chunks,
+                uploaded_file.name,
+                pages=pages,
+                file_type=file_type,
+            )
 
         display_name = uploaded_file.name
         if len(display_name) > 30:

@@ -36,21 +36,30 @@ class DocumentRepository:
         Data saved to ./chroma_db folder - survives restarts.
         """
         self._client = chromadb.PersistentClient(path="./chroma_db")
-        self._collections: dict[str, object] ={}
+        self._collections: dict[str, object] = {}
         logger.info(
-            "repository_initializd",
+            "repository_initialized",
             storage="persistent",
             path="./chroma_db"
         )
 
-    def store_document(self, doc_id: str, chunks: list[str], doc_name: str) -> int:
+    def store_document(
+        self,
+        doc_id: str,
+        chunks: list[str],
+        doc_name: str,
+        pages: int = 0,
+        file_type: str = "unknown",
+    ) -> int:
         """
         Store document chunks in ChromaDB.
 
         Args:
-            doc_id:   unique identifier for this document
-            chunks:   list of text chunks
-            doc_name: original filename for display
+            doc_id:    unique identifier for this document
+            chunks:    list of text chunks
+            doc_name:  original filename for display
+            pages:     page count, persisted for session restore
+            file_type: file extension, persisted for session restore
 
         Returns:
             number of chunks stored
@@ -63,14 +72,19 @@ class DocumentRepository:
                 # This ensures clean state on re-upload
                 try:
                     self._client.delete_collection(collection_name)
-                    logger.info("exisitng_collection_deleted", name=collection_name)
+                    logger.info("existing_collection_deleted", name=collection_name)
                 except Exception:
                     pass  # collection didn't exist — that's fine
 
                 # Create fresh collection
                 collection = self._client.create_collection(
                     name=collection_name,
-                    metadata={"doc_name": doc_name, "hnsw:space": "cosine"},
+                    metadata={
+                        "doc_name": doc_name,
+                        "hnsw:space": "cosine",
+                        "pages": str(pages) if pages else "0",
+                        "file_type": file_type if file_type else "unknown",
+                    },
                 )
 
                 # Store each chunk with metadata
@@ -202,8 +216,12 @@ class DocumentRepository:
             self.remove_document(doc_id)
         logger.info("repository_cleared")
 
-    def restore_collections(self) -> list[str]:
-        """Reload collections saved in previous sessions."""
+    def restore_collections(self) -> list[dict]:
+        """
+        Reload collections saved in previous sessions.
+        Returns list of dicts with doc_id and doc_name
+        so the UI can repopulate its document list.
+        """
         try:
             existing = self._client.list_collections()
             restored = []
@@ -212,13 +230,26 @@ class DocumentRepository:
                 name = col.name
                 if name.startswith(COLLECTION_PREFIX):
                     doc_id = name[len(COLLECTION_PREFIX):]
-                    self._collections[doc_id] = \
-                        self._client.get_collection(name)
-                    restored.append(doc_id)
+                    collection = self._client.get_collection(name)
+                    self._collections[doc_id] = collection
+
+                    metadata = collection.metadata or {}
+                    doc_name = metadata.get("doc_name", doc_id)
+                    chunk_count = collection.count()
+
+                    restored.append({
+                        "doc_id": doc_id,
+                        "doc_name": doc_name,
+                        "chunks": chunk_count,
+                        "pages": int(metadata.get("pages", "0")),
+                        "file_type": metadata.get("file_type", "unknown"),
+                    })
+
                     logger.info(
                         "collection_restored",
                         doc_id=doc_id,
-                        name=name
+                        doc_name=doc_name,
+                        chunks=chunk_count
                     )
 
             logger.info("restore_complete", count=len(restored))
