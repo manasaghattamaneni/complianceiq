@@ -20,3 +20,6 @@ Thumbs.db
 
 # ChromaDB local data
 chroma/
+
+# ChromaDB persistent storage
+chroma_db/

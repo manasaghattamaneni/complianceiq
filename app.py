@@ -27,6 +27,14 @@ def init_session():
         )
         st.stop()
 
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    if "repo" not in st.session_state:
+        st.session_state.repo = DocumentRepository()
+        st.session_state.repo.restore_collections()
+    if "engine" not in st.session_state:
+        st.session_state.engine = None
+
     defaults = {
         "session_id": str(uuid.uuid4()),
         "repo": DocumentRepository(),

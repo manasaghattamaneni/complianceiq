@@ -31,10 +31,17 @@ class DocumentRepository:
     """
 
     def __init__(self):
-        """Initialize ChromaDB client."""
-        self._client = chromadb.Client()
-        self._collections: dict[str, object] = {}
-        logger.info("repository_initialized")
+        """
+        Initialize ChromaDB with persistent storage.
+        Data saved to ./chroma_db folder - survives restarts.
+        """
+        self._client = chromadb.PersistentClient(path="./chroma_db")
+        self._collections: dict[str, object] ={}
+        logger.info(
+            "repository_initializd",
+            storage="persistent",
+            path="./chroma_db"
+        )
 
     def store_document(self, doc_id: str, chunks: list[str], doc_name: str) -> int:
         """
@@ -56,6 +63,7 @@ class DocumentRepository:
                 # This ensures clean state on re-upload
                 try:
                     self._client.delete_collection(collection_name)
+                    logger.info("exisitng_collection_deleted", name=collection_name)
                 except Exception:
                     pass  # collection didn't exist — that's fine
 
@@ -193,3 +201,29 @@ class DocumentRepository:
         for doc_id in list(self._collections.keys()):
             self.remove_document(doc_id)
         logger.info("repository_cleared")
+
+    def restore_collections(self) -> list[str]:
+        """Reload collections saved in previous sessions."""
+        try:
+            existing = self._client.list_collections()
+            restored = []
+
+            for col in existing:
+                name = col.name
+                if name.startswith(COLLECTION_PREFIX):
+                    doc_id = name[len(COLLECTION_PREFIX):]
+                    self._collections[doc_id] = \
+                        self._client.get_collection(name)
+                    restored.append(doc_id)
+                    logger.info(
+                        "collection_restored",
+                        doc_id=doc_id,
+                        name=name
+                    )
+
+            logger.info("restore_complete", count=len(restored))
+            return restored
+
+        except Exception as e:
+            logger.log_error("restore_failed", e)
+            return []
