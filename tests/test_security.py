@@ -1,7 +1,3 @@
-# tests/test_security.py
-# Tests for security validation
-# Run with: pytest tests/test_security.py -v
-
 import pytest
 from unittest.mock import MagicMock
 from core.security import SecurityValidator, SecurityError
@@ -15,12 +11,8 @@ def make_mock_file(name="test.pdf", size=1024):
     return mock
 
 
-# ---- File Type Tests ----
-
-
 def test_valid_pdf_passes():
     file = make_mock_file("document.pdf")
-    # Should not raise any exception
     SecurityValidator.validate_file_type(file)
 
 
@@ -46,11 +38,8 @@ def test_invalid_js_raises_error():
         SecurityValidator.validate_file_type(file)
 
 
-# ---- File Size Tests ----
-
-
 def test_small_file_passes():
-    file = make_mock_file(size=1024 * 1024)  # 1MB
+    file = make_mock_file(size=1024 * 1024)
     SecurityValidator.validate_file_size(file)
 
 
@@ -60,12 +49,9 @@ def test_file_at_limit_passes():
 
 
 def test_file_over_limit_raises_error():
-    file = make_mock_file(size=11 * 1024 * 1024)  # 11MB
+    file = make_mock_file(size=11 * 1024 * 1024)
     with pytest.raises(SecurityError):
         SecurityValidator.validate_file_size(file)
-
-
-# ---- Question Validation Tests ----
 
 
 def test_normal_question_passes():

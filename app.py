@@ -1,8 +1,6 @@
-# app.py
-# ComplianceIQ — RAG prototype
-
 import streamlit as st
 import time
+import hashlib
 import uuid
 from config import APP_NAME, APP_VERSION, RATE_LIMIT_SECONDS
 from core.security import SecurityValidator, SecurityError
@@ -13,18 +11,15 @@ from core.ai_engine import AIEngine
 from utils.logger import logger
 from utils.metrics import SessionMetrics, QueryMetric
 
-# ---- Page Config ----
 st.set_page_config(page_title=APP_NAME, page_icon="🔍", layout="centered")
 
 
-# ---- Session State Initialization ----
 def init_session():
     try:
         _ = st.secrets["ANTHROPIC_API_KEY"]
     except Exception:
         st.error(
-            "🔒 Missing API key. Add ANTHROPIC_API_KEY "
-            "to .streamlit/secrets.toml"
+            "🔒 Missing API key. Add ANTHROPIC_API_KEY " "to .streamlit/secrets.toml"
         )
         st.stop()
 
@@ -37,7 +32,7 @@ def init_session():
         if "documents" not in st.session_state:
             st.session_state.documents = {}
         restored = st.session_state.repo.restore_collections()
-        for i, doc in enumerate(restored[:2]):
+        for i, doc in enumerate(restored):
             slot = f"doc{i + 1}"
             display_name = doc["doc_name"]
             if len(display_name) > 30:
@@ -48,13 +43,10 @@ def init_session():
                 "display_name": display_name,
                 "pages": doc["pages"],
                 "chunks": doc["chunks"],
-                "type": doc["file_type"].upper()
+                "type": doc["file_type"].upper(),
             }
         if restored:
-            logger.info(
-                "ui_documents_restored",
-                count=len(restored)
-            )
+            logger.info("ui_documents_restored", count=len(restored))
 
     if "engine" not in st.session_state:
         st.session_state.engine = None
@@ -73,6 +65,7 @@ def init_session():
 
     if st.session_state.engine is None:
         st.session_state.engine = AIEngine(st.session_state.repo)
+
 
 init_session()
 
@@ -104,13 +97,13 @@ def process_upload(uploaded_file, doc_slot: str):
 
         with st.spinner("Indexing document..."):
             chunks = split_into_chunks(text, file_type=file_type)
-            doc_id = f"{doc_slot}_{st.session_state.session_id}"
+            # Stable doc_id based on content hash — not session_id
+            # Same document content always gets the same doc_id
+            # Re-uploading replaces the old collection cleanly
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            doc_id = f"{doc_slot}_{content_hash}"
             st.session_state.repo.store_document(
-                doc_id,
-                chunks,
-                uploaded_file.name,
-                pages=pages,
-                file_type=file_type,
+                doc_id, chunks, uploaded_file.name, pages=pages, file_type=file_type
             )
 
         display_name = uploaded_file.name
@@ -151,7 +144,6 @@ def record_task_metric(response, duration_ms: float):
     )
 
 
-# ---- Sidebar ----
 with st.sidebar:
     st.markdown(f"### 📊 Session Metrics")
 
@@ -169,19 +161,17 @@ with st.sidebar:
         st.divider()
 
     # Tokens tracked internally in logs only
-    # Tokens tracked internally in logs only
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Questions asked", m.total_queries)
     with col2:
         st.metric("Helpful answers", m.feedback_ratio)
 
-    # Log engineering metrics internally only
     logger.info(
-    "session_metrics_snapshot",
-    avg_latency_ms=m.avg_latency_ms,
-    avg_confidence=m.avg_confidence,
-    total_queries=m.total_queries
+        "session_metrics_snapshot",
+        avg_latency_ms=m.avg_latency_ms,
+        avg_confidence=m.avg_confidence,
+        total_queries=m.total_queries,
     )
 
     if st.session_state.messages:
@@ -203,14 +193,12 @@ with st.sidebar:
         f"{APP_NAME} v{APP_VERSION}\n" "Python · ChromaDB · Claude API · Streamlit"
     )
 
-# ---- Header ----
 st.title("🔍 ComplianceIQ")
 st.caption(
     "AI-powered compliance document analyzer · "
     "Powered by Claude API · RAG + ChromaDB"
 )
 
-# ---- Document Upload ----
 st.markdown("### 📄 Documents")
 upload_col1, upload_col2 = st.columns(2)
 
@@ -238,7 +226,6 @@ with upload_col2:
         if file2.name != current.get("name"):
             process_upload(file2, "doc2")
 
-# ---- Action Buttons ----
 if len(st.session_state.documents) >= 2:
     st.divider()
     btn_col1, btn_col2, btn_col3 = st.columns(3)
@@ -267,7 +254,6 @@ if len(st.session_state.documents) >= 2:
                         {"role": "assistant", "content": response.answer}
                     )
                     record_task_metric(response, duration_ms)
-                    # Log tokens internally only
                     logger.info("gap_analysis_tokens", tokens=response.token_count)
                     st.rerun()
                 except Exception as e:
@@ -281,7 +267,7 @@ if len(st.session_state.documents) >= 2:
             with st.spinner("Generating compliance checklist..."):
                 try:
                     start = time.perf_counter()
-                    response = st.session_state.engine.generate_checklist(
+                    response = st.session_state.engine.generate_checklist_mapreduce(
                         doc1["id"], doc1["name"]
                     )
                     duration_ms = (time.perf_counter() - start) * 1000
@@ -303,7 +289,7 @@ if len(st.session_state.documents) >= 2:
 
     with btn_col3:
         if st.button("🗑️ Clear Documents", use_container_width=True):
-            clear_all_documents() 
+            clear_all_documents()
             st.rerun()
 
 elif len(st.session_state.documents) == 1:
@@ -341,7 +327,6 @@ elif len(st.session_state.documents) == 1:
             clear_all_documents()
             st.rerun()
 
-# ---- Chat Interface ----
 if st.session_state.documents:
     st.divider()
 
@@ -379,18 +364,15 @@ if st.session_state.documents:
                         logger.log_feedback("down", 0)
                         st.rerun()
 
-    # Chat input
     question = st.chat_input("Ask a question about your document(s)...")
 
     if question:
-        # Rate limiting
         now = time.time()
         if now - st.session_state.last_request < RATE_LIMIT_SECONDS:
             st.warning("Please wait a moment before asking again.")
             st.stop()
         st.session_state.last_request = now
 
-        # Security validation
         try:
             clean_question = SecurityValidator.validate_question(question)
         except SecurityError as e:
@@ -399,22 +381,18 @@ if st.session_state.documents:
 
         doc_ids = [doc["id"] for doc in st.session_state.documents.values()]
 
-        # Save user message first
         st.session_state.messages.append({"role": "user", "content": clean_question})
 
-        # Get answer
         try:
             start = time.perf_counter()
 
             response = st.session_state.engine.answer_question(clean_question, doc_ids)
             duration_ms = (time.perf_counter() - start) * 1000
 
-            # Save answer
             st.session_state.messages.append(
                 {"role": "assistant", "content": response.answer}
             )
 
-            # Update metrics
             st.session_state.metrics.add_query(
                 QueryMetric(
                     question_length=len(clean_question),
@@ -424,7 +402,6 @@ if st.session_state.documents:
                 )
             )
 
-            # Log tokens internally
             logger.info("query_tokens", tokens=response.token_count)
 
         except Exception as e:

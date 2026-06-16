@@ -1,8 +1,7 @@
-# core/retrieval.py
-# Repository Pattern — abstracts all ChromaDB operations
 # Nothing outside this file knows ChromaDB exists
 # If we switch to Pinecone tomorrow — only this file changes
 
+import time
 import chromadb
 from dataclasses import dataclass
 from config import COLLECTION_PREFIX, MAX_RETRIEVAL_RESULTS
@@ -37,11 +36,7 @@ class DocumentRepository:
         """
         self._client = chromadb.PersistentClient(path="./chroma_db")
         self._collections: dict[str, object] = {}
-        logger.info(
-            "repository_initialized",
-            storage="persistent",
-            path="./chroma_db"
-        )
+        logger.info("repository_initialized", storage="persistent", path="./chroma_db")
 
     def store_document(
         self,
@@ -68,7 +63,6 @@ class DocumentRepository:
             try:
                 collection_name = f"{COLLECTION_PREFIX}{doc_id}"
 
-                # Delete existing collection if it exists
                 # This ensures clean state on re-upload
                 try:
                     self._client.delete_collection(collection_name)
@@ -76,7 +70,6 @@ class DocumentRepository:
                 except Exception:
                     pass  # collection didn't exist — that's fine
 
-                # Create fresh collection
                 collection = self._client.create_collection(
                     name=collection_name,
                     metadata={
@@ -84,10 +77,10 @@ class DocumentRepository:
                         "hnsw:space": "cosine",
                         "pages": str(pages) if pages else "0",
                         "file_type": file_type if file_type else "unknown",
+                        "created_at": str(time.time()),
                     },
                 )
 
-                # Store each chunk with metadata
                 for i, chunk in enumerate(chunks):
                     collection.add(
                         documents=[chunk],
@@ -101,7 +94,6 @@ class DocumentRepository:
                         ],
                     )
 
-                # Keep reference to collection
                 self._collections[doc_id] = collection
 
                 logger.info(
@@ -145,19 +137,16 @@ class DocumentRepository:
                         logger.warning("collection_not_found", doc_id=doc_id)
                         continue
 
-                    # Query ChromaDB
                     raw = collection.query(
                         query_texts=[question],
                         n_results=min(n_results, len(collection.get()["ids"])),
                     )
 
-                    # Parse results into clean objects
                     chunks = raw["documents"][0]
                     distances = raw["distances"][0]
                     metadatas = raw["metadatas"][0]
 
                     for chunk, distance, metadata in zip(chunks, distances, metadatas):
-                        # Convert distance to confidence %
                         # cosine distance: 0 = identical, 1 = orthogonal, 2 = opposite
                         # similarity = (1 - distance) * 100
                         confidence = round((1 - distance) * 100, 1)
@@ -172,7 +161,6 @@ class DocumentRepository:
                             )
                         )
 
-                # Sort by confidence — best matches first
                 all_results.sort(key=lambda r: r.confidence_pct, reverse=True)
 
                 logger.info(
@@ -216,41 +204,61 @@ class DocumentRepository:
             self.remove_document(doc_id)
         logger.info("repository_cleared")
 
-    def restore_collections(self) -> list[dict]:
+    def restore_collections(self, limit: int = 2) -> list[dict]:
         """
-        Reload collections saved in previous sessions.
-        Returns list of dicts with doc_id and doc_name
-        so the UI can repopulate its document list.
+        Reload the most recently created collections from disk.
+
+        Collections are ranked by their stored ``created_at`` timestamp and
+        capped at ``limit`` so a restart never surfaces arbitrary old
+        documents. Returns metadata dicts the UI uses to repopulate its slots.
         """
         try:
-            existing = self._client.list_collections()
-            restored = []
+            candidates = []
 
-            for col in existing:
+            for col in self._client.list_collections():
                 name = col.name
-                if name.startswith(COLLECTION_PREFIX):
-                    doc_id = name[len(COLLECTION_PREFIX):]
+                if not name.startswith(COLLECTION_PREFIX):
+                    continue
+                try:
+                    doc_id = name[len(COLLECTION_PREFIX) :]
                     collection = self._client.get_collection(name)
-                    self._collections[doc_id] = collection
-
                     metadata = collection.metadata or {}
-                    doc_name = metadata.get("doc_name", doc_id)
-                    chunk_count = collection.count()
-
-                    restored.append({
-                        "doc_id": doc_id,
-                        "doc_name": doc_name,
-                        "chunks": chunk_count,
-                        "pages": int(metadata.get("pages", "0")),
-                        "file_type": metadata.get("file_type", "unknown"),
-                    })
-
-                    logger.info(
-                        "collection_restored",
-                        doc_id=doc_id,
-                        doc_name=doc_name,
-                        chunks=chunk_count
+                    candidates.append(
+                        {
+                            "doc_id": doc_id,
+                            "doc_name": metadata.get("doc_name", doc_id),
+                            "chunks": collection.count(),
+                            "pages": int(metadata.get("pages", 0)),
+                            "file_type": metadata.get("file_type", "unknown"),
+                            "created_at": float(metadata.get("created_at", 0.0)),
+                            "collection": collection,
+                        }
                     )
+                except Exception as e:
+                    # One bad collection shouldn't abort the whole restore
+                    logger.log_error("collection_restore_skipped", e)
+
+            # Most recent first, then keep only what the UI can show
+            candidates.sort(key=lambda c: c["created_at"], reverse=True)
+            candidates = candidates[:limit]
+
+            restored = []
+            for c in candidates:
+                self._collections[c["doc_id"]] = c["collection"]
+                restored.append(
+                    {
+                        "doc_id": c["doc_id"],
+                        "doc_name": c["doc_name"],
+                        "chunks": c["chunks"],
+                        "pages": c["pages"],
+                        "file_type": c["file_type"],
+                    }
+                )
+                logger.info(
+                    "collection_restored",
+                    doc_id=c["doc_id"],
+                    doc_name=c["doc_name"],
+                )
 
             logger.info("restore_complete", count=len(restored))
             return restored

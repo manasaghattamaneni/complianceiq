@@ -1,10 +1,5 @@
-# tests/test_chunking.py
-# Tests for smart chunking strategies
-
 import pytest
 from core.chunking import split_into_chunks, _default_strategy, _csv_strategy
-
-# ---- Default Strategy Tests ----
 
 
 def test_normal_text_produces_chunks():
@@ -32,25 +27,19 @@ def test_short_text_returns_one_chunk():
 def test_chunk_size_respected():
     text = "A" * 2000
     chunks = _default_strategy(text, chunk_size=500, overlap=50)
-    # Each chunk should be at most 500 chars
     for chunk in chunks:
         assert len(chunk) <= 500
 
 
 def test_overlap_creates_repeated_content():
-    text = "Word " * 200  # 1000 chars
+    text = "Word " * 200
     chunks = _default_strategy(text, chunk_size=100, overlap=20)
     assert len(chunks) > 1
-    # Consecutive chunks should share some content due to overlap
     if len(chunks) >= 2:
         end_of_first = chunks[0][-20:]
         start_of_second = chunks[1][:20]
-        # They should share characters
         assert len(end_of_first) > 0
         assert len(start_of_second) > 0
-
-
-# ---- CSV Strategy Tests ----
 
 
 def _csv_strategy(text: str) -> list[str]:
@@ -59,7 +48,6 @@ def _csv_strategy(text: str) -> list[str]:
     Groups rows into chunks of 20 rows each.
     Keeps column headers in every chunk for context.
     """
-    # Early return for empty input
     if not text or not text.strip():
         return []
 
@@ -68,7 +56,6 @@ def _csv_strategy(text: str) -> list[str]:
     if not lines:
         return []
 
-    # First line is always column headers
     header = lines[0]
     data_lines = lines[1:]
 
@@ -78,7 +65,6 @@ def _csv_strategy(text: str) -> list[str]:
     chunks = []
     rows_per_chunk = 20
 
-    # Group rows into chunks — always include header
     for i in range(0, len(data_lines), rows_per_chunk):
         batch = data_lines[i : i + rows_per_chunk]
         chunk = header + "\n" + "\n".join(batch)
@@ -91,7 +77,6 @@ def _csv_strategy(text: str) -> list[str]:
 def test_csv_chunking_includes_header():
     csv_text = "name,role,salary\n" + "John,Engineer,100000\n" * 50
     chunks = _csv_strategy(csv_text)
-    # Every chunk should contain the header
     for chunk in chunks:
         assert "name,role,salary" in chunk
 
@@ -102,20 +87,15 @@ def test_csv_empty_returns_fallback():
 
 
 def test_csv_groups_rows():
-    # 50 data rows should produce multiple chunks
     csv_text = "col1,col2\n" + "a,b\n" * 50
     chunks = _csv_strategy(csv_text)
     assert len(chunks) > 1
-
-
-# ---- Strategy Selection Tests ----
 
 
 def test_csv_file_uses_csv_strategy():
     csv_text = "name,value\n" + "item,100\n" * 25
     chunks = split_into_chunks(csv_text, file_type="csv")
     assert len(chunks) > 0
-    # CSV strategy includes header in each chunk
     for chunk in chunks:
         assert "name,value" in chunk
 

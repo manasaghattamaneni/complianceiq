@@ -1,7 +1,3 @@
-# utils/logger.py
-# Structured JSON logging for the entire application
-# Every event is logged with timestamp, level, and context
-
 import logging
 import json
 import traceback
@@ -25,12 +21,10 @@ class StructuredLogger:
 
         # Prevent duplicate handlers if logger already exists
         if not self.logger.handlers:
-            # Console handler — shows logs in terminal
             console_handler = logging.StreamHandler()
             console_handler.setFormatter(self._get_formatter())
             self.logger.addHandler(console_handler)
 
-            # File handler — saves logs to file
             from logging.handlers import RotatingFileHandler
 
             file_handler = RotatingFileHandler(
@@ -49,7 +43,7 @@ class StructuredLogger:
             "app": APP_NAME,
             "level": level,
             "event": event,
-            **kwargs,  # any extra fields passed in
+            **kwargs,
         }
         return json.dumps(log_entry)
 
@@ -114,6 +108,5 @@ class StructuredLogger:
         self.error(event, exception=exception, doc_name=doc_name or "unknown")
 
 
-# Single shared logger instance
 # Import this everywhere: from utils.logger import logger
 logger = StructuredLogger(APP_NAME)

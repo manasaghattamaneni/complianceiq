@@ -1,8 +1,5 @@
-# core/security.py
-# All security validation in one place
 # Defense in depth — multiple layers of checks
 
-import re
 from config import (
     MAX_FILE_SIZE_BYTES,
     ALLOWED_FILE_TYPES,
@@ -14,6 +11,7 @@ from utils.logger import logger
 
 class SecurityError(Exception):
     """Raised when input fails security validation."""
+
     pass
 
 
@@ -29,7 +27,6 @@ class SecurityValidator:
         Check file extension is allowed.
         Raises SecurityError if not allowed.
         """
-        # Get extension from filename
         filename = file.name.lower()
         extension = filename.split(".")[-1]  # "pci_dss.PDF" → "pdf"
 
@@ -83,7 +80,6 @@ class SecurityValidator:
                 f"Maximum is {MAX_QUESTION_LENGTH} characters."
             )
 
-        # Check for prompt injection attempts
         question_lower = question.lower()
         for pattern in DANGEROUS_PATTERNS:
             if pattern in question_lower:

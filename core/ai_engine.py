@@ -1,8 +1,3 @@
-# core/ai_engine.py
-# AI Engine — all Claude API interactions in one place
-# Single Responsibility: ONLY handles AI calls
-# Uses retrieval results to build grounded prompts
-
 import anthropic
 import streamlit as st
 from dataclasses import dataclass
@@ -14,10 +9,7 @@ from utils.metrics import Timer, QueryMetric
 
 @dataclass
 class AIResponse:
-    """
-    Structured response from Claude API.
-    Clean DTO — callers get typed object not raw API response.
-    """
+    """Structured response from Claude API."""
 
     answer: str
     token_count: int
@@ -41,16 +33,22 @@ class AIEngine:
         Repository is injected to allow testing with mock stores.
         """
         self._repo = repository
-        self._client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+        self._client = None  # lazy initialization
+
+    def _get_client(self):
+        """
+        Returns Anthropic client — created on first use.
+        Lazy init means tests can create AIEngine without
+        needing real secrets.
+        """
+        if self._client is None:
+            self._client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+        return self._client
 
     def _build_context(self, results: list[RetrievalResult]) -> str:
-        """
-        Build context string from retrieval results.
-        Each chunk labeled with source and confidence.
-        """
+        """Build context string from retrieval results."""
         if not results:
             return "No relevant context found."
-
         context_parts = []
         for i, result in enumerate(results, 1):
             context_parts.append(
@@ -58,27 +56,16 @@ class AIEngine:
                 f"| Confidence: {result.confidence_pct}%]\n"
                 f"{result.chunk_text}"
             )
-
         return "\n\n---\n\n".join(context_parts)
 
     def answer_question(self, question: str, doc_ids: list[str]) -> AIResponse:
-        """
-        Answer a question using RAG.
-        1. Retrieve relevant chunks
-        2. Build context
-        3. Call Claude
-        4. Return structured response
-        """
+        """Answer a question using RAG."""
         with Timer() as t:
             try:
-                # Step 1 — Retrieve relevant chunks
                 results = self._repo.search(question, doc_ids)
-
-                # Step 2 — Build context from results
                 context = self._build_context(results)
 
-                # Step 3 — Call Claude with context
-                response = self._client.messages.create(
+                response = self._get_client().messages.create(
                     model=AI_MODEL,
                     max_tokens=MAX_TOKENS,
                     system="""You are a senior compliance analyst \
@@ -91,8 +78,7 @@ Never guess or make up information.""",
                     messages=[
                         {
                             "role": "user",
-                            "content": f"""Answer using ONLY the \
-context below.
+                            "content": f"""Answer using ONLY the context below.
 
 Context:
 {context}
@@ -106,7 +92,6 @@ Question: {question}""",
                 token_count = response.usage.input_tokens + response.usage.output_tokens
                 top_confidence = results[0].confidence_pct if results else 0.0
 
-                # Log query metrics
                 logger.log_query(
                     question_length=len(question),
                     num_docs=len(doc_ids),
@@ -129,14 +114,9 @@ Question: {question}""",
     def analyze_gaps(
         self, doc_id_1: str, doc_name_1: str, doc_id_2: str, doc_name_2: str
     ) -> AIResponse:
-        """
-        Compare two documents and identify compliance gaps.
-        Retrieves broad context from both docs then asks
-        Claude to identify missing requirements.
-        """
+        """Compare two documents and identify compliance gaps."""
         with Timer() as t:
             try:
-                # Get broad context from both documents
                 results1 = self._repo.search(
                     "requirements obligations shall must", [doc_id_1], n_results=5
                 )
@@ -147,7 +127,7 @@ Question: {question}""",
                 context1 = self._build_context(results1)
                 context2 = self._build_context(results2)
 
-                response = self._client.messages.create(
+                response = self._get_client().messages.create(
                     model=AI_MODEL,
                     max_tokens=2048,
                     system="""You are a senior compliance analyst. \
@@ -166,14 +146,10 @@ DOCUMENT 2 — {doc_name_2}:
 {context2}
 
 Provide a structured analysis with:
-1. **Requirements in {doc_name_2} NOT addressed in {doc_name_1}** \
-(critical gaps)
-2. **Requirements in {doc_name_1} NOT in {doc_name_2}** \
-(additional controls)
+1. **Requirements in {doc_name_2} NOT addressed in {doc_name_1}**
+2. **Requirements in {doc_name_1} NOT in {doc_name_2}**
 3. **Overall compliance risk** (High / Medium / Low with reason)
-4. **Top 3 recommended actions** (specific and actionable)
-
-Be precise. Reference specific requirements where possible.""",
+4. **Top 3 recommended actions**""",
                         }
                     ],
                 )
@@ -201,26 +177,20 @@ Be precise. Reference specific requirements where possible.""",
                 raise ValueError(f"Gap analysis failed: {str(e)}")
 
     def generate_checklist(self, doc_id: str, doc_name: str) -> AIResponse:
-        """
-        Auto-generate compliance checklist from a document.
-        Extracts all 'shall', 'must', 'required' statements
-        and formats them as actionable checklist items.
-        """
+        """Generate checklist using top-k retrieval."""
         with Timer() as t:
             try:
-                # Search specifically for requirement language
                 results = self._repo.search(
                     "shall must required mandatory obligated", [doc_id], n_results=5
                 )
-
                 context = self._build_context(results)
 
-                response = self._client.messages.create(
+                response = self._get_client().messages.create(
                     model=AI_MODEL,
                     max_tokens=2048,
                     system="""You are a compliance officer. \
 Extract requirements and format them as actionable \
-checklist items. Be thorough and specific.""",
+checklist items.""",
                     messages=[
                         {
                             "role": "user",
@@ -233,10 +203,7 @@ Context:
 {context}
 
 Format each item as:
-- [ ] Requirement description (Section reference if available)
-
-Group by category if possible. Include every 'shall', \
-'must', 'required', 'mandatory' statement.""",
+- [ ] Requirement description""",
                         }
                     ],
                 )
@@ -261,3 +228,138 @@ Group by category if possible. Include every 'shall', \
             except Exception as e:
                 logger.log_error("checklist_generation_failed", e)
                 raise ValueError(f"Checklist generation failed: {str(e)}")
+
+    def generate_checklist_mapreduce(self, doc_id: str, doc_name: str) -> AIResponse:
+        """
+        Map-reduce checklist generation.
+        Sees ALL chunks — not just top-k.
+
+        MAP:    extract requirements from each batch of chunks
+        REDUCE: merge all partial checklists into one final list
+        """
+        with Timer() as t:
+            try:
+                collection = self._repo._collections.get(doc_id)
+                if not collection:
+                    raise ValueError(f"Document {doc_id} not found in repository")
+
+                all_data = collection.get()
+                all_chunks = all_data["documents"]
+                total_chunks = len(all_chunks)
+
+                logger.info(
+                    "mapreduce_started", doc_name=doc_name, total_chunks=total_chunks
+                )
+
+                if total_chunks == 0:
+                    raise ValueError("No chunks found for document")
+
+                batch_size = 10
+                partial_checklists = []
+                total_tokens = 0
+
+                for i in range(0, total_chunks, batch_size):
+                    batch = all_chunks[i : i + batch_size]
+                    batch_text = "\n\n---\n\n".join(batch)
+                    batch_num = (i // batch_size) + 1
+                    total_batches = (total_chunks + batch_size - 1) // batch_size
+
+                    logger.info(
+                        "mapreduce_batch",
+                        batch=batch_num,
+                        total_batches=total_batches,
+                        chunks_in_batch=len(batch),
+                    )
+
+                    map_response = self._get_client().messages.create(
+                        model=AI_MODEL,
+                        max_tokens=1024,
+                        system="""You are a compliance analyst.
+Extract ONLY explicit requirements from the text.
+Look for: shall, must, required, mandatory, obligated.
+Format each as: - [ ] Requirement description
+If no requirements found, respond with: NO_REQUIREMENTS""",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": f"""Extract all compliance \
+requirements from this text.
+
+Document: {doc_name} (batch {batch_num}/{total_batches})
+
+Text:
+{batch_text}
+
+List each requirement as:
+- [ ] Requirement description""",
+                            }
+                        ],
+                    )
+
+                    total_tokens += (
+                        map_response.usage.input_tokens
+                        + map_response.usage.output_tokens
+                    )
+                    result = map_response.content[0].text.strip()
+                    if result != "NO_REQUIREMENTS" and result:
+                        partial_checklists.append(result)
+
+                if not partial_checklists:
+                    return AIResponse(
+                        answer="No compliance requirements found " "in this document.",
+                        token_count=0,
+                        top_confidence=0.0,
+                        sources=[],
+                    )
+
+                combined = "\n\n".join(partial_checklists)
+
+                reduce_response = self._get_client().messages.create(
+                    model=AI_MODEL,
+                    max_tokens=2048,
+                    system="""You are a senior compliance analyst.
+Merge requirement checklists into one clean final list.
+Remove duplicates. Group by category if possible.
+Keep the - [ ] format for each item.""",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": f"""Merge these partial checklists \
+into one complete deduplicated compliance checklist.
+
+Document: {doc_name}
+
+Partial checklists:
+{combined}
+
+Produce one final organized checklist.
+Remove duplicates. Group related requirements.
+Keep - [ ] format.""",
+                        }
+                    ],
+                )
+
+                final_checklist = reduce_response.content[0].text
+                total_tokens += (
+                    reduce_response.usage.input_tokens
+                    + reduce_response.usage.output_tokens
+                )
+
+                logger.info(
+                    "mapreduce_complete",
+                    doc_name=doc_name,
+                    batches_processed=len(partial_checklists),
+                    total_chunks=total_chunks,
+                    duration_ms=t.duration_ms,
+                )
+
+                return AIResponse(
+                    answer=final_checklist,
+                    token_count=total_tokens,
+                    top_confidence=0.0,
+                    sources=[],
+                )
+
+            except Exception as e:
+                logger.log_error("mapreduce_checklist_failed", e, doc_name=doc_name)
+                raise ValueError(f"Map-reduce checklist failed: {str(e)}")

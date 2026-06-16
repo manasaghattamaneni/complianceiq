@@ -1,16 +1,15 @@
-# tests/test_rag_quality.py
-# Tests for retrieval quality and repository operations
 # These tests verify RAG accuracy — not just "does it work"
 # but "does it find the RIGHT information"
 
 import pytest
 from core.retrieval import DocumentRepository, RetrievalResult
 from core.chunking import split_into_chunks
+from core.ai_engine import AIEngine
 
 
 @pytest.fixture
 def repo():
-    
+
     repository = DocumentRepository()
     yield repository
     repository.clear_all()  # cleanup after each test
@@ -36,9 +35,6 @@ def loaded_repo(repo):
     chunks = split_into_chunks(compliance_text, file_type="txt")
     repo.store_document("test_doc", chunks, "test_compliance.txt")
     return repo
-
-
-# ---- Repository Tests ----
 
 
 def test_store_document_returns_chunk_count(repo):
@@ -102,9 +98,6 @@ def test_reupload_replaces_existing(repo):
     assert len(results) > 0
 
 
-# ---- RAG Quality Tests ----
-
-
 def test_search_finds_relevant_content(loaded_repo):
     """
     Core RAG quality test.
@@ -112,7 +105,6 @@ def test_search_finds_relevant_content(loaded_repo):
     """
     results = loaded_repo.search("How often must passwords be changed?", ["test_doc"])
     assert len(results) > 0
-    # The answer should be in the top result
     top_result = results[0]
     assert isinstance(top_result, RetrievalResult)
     assert len(top_result.chunk_text) > 0
@@ -170,9 +162,7 @@ def test_restore_collections_round_trips_metadata(repo):
     """pages/file_type persisted on store should survive restore."""
     text = "Compliance requirement text. " * 50
     chunks = split_into_chunks(text)
-    repo.store_document(
-        "restore_doc", chunks, "report.pdf", pages=7, file_type="pdf"
-    )
+    repo.store_document("restore_doc", chunks, "report.pdf", pages=7, file_type="pdf")
 
     # A fresh repository instance reads from the same persistent store
     fresh = DocumentRepository()
@@ -183,3 +173,26 @@ def test_restore_collections_round_trips_metadata(repo):
     assert match["pages"] == 7
     assert match["file_type"] == "pdf"
     assert match["chunks"] == len(chunks)
+
+
+def test_mapreduce_checklist(loaded_repo):
+    """Test map-reduce processes all chunks."""
+    from unittest.mock import MagicMock
+
+    engine = AIEngine(loaded_repo)
+
+    mock_response = MagicMock()
+    mock_response.content[0].text = "- [ ] Test requirement"
+    mock_response.usage.input_tokens = 100
+    mock_response.usage.output_tokens = 50
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_response
+
+    engine._client = mock_client
+
+    result = engine.generate_checklist_mapreduce("test_doc", "test_compliance.txt")
+
+    assert result.answer is not None
+    assert len(result.answer) > 0
+    assert mock_client.messages.create.call_count >= 2

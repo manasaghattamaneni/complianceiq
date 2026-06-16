@@ -1,18 +1,12 @@
-# tests/test_ingestion.py
-# Tests for multi-format document ingestion
-
 import pytest
 import io
 from unittest.mock import MagicMock, patch
 from core.ingestion import extract_text, _read_txt, _read_csv
 
-# ---- TXT Reader Tests ----
-
 
 def test_read_txt_returns_text():
     mock_file = MagicMock()
     mock_file.name = "test.txt"
-    # ← make content long enough (over 100 chars)
     mock_file.read.return_value = (
         b"This is a test document with compliance content. " * 5
     )
@@ -25,13 +19,9 @@ def test_read_txt_returns_text():
 def test_read_txt_handles_latin_encoding():
     mock_file = MagicMock()
     mock_file.name = "test.txt"
-    # ← make content long enough
     mock_file.read.return_value = ("Héllo Wörld " * 20).encode("latin-1")
     text, pages, file_type = extract_text(file=mock_file)
     assert len(text) > 0
-
-
-# ---- CSV Reader Tests ----
 
 
 def test_read_csv_returns_structured_text():
@@ -55,9 +45,6 @@ def test_read_csv_returns_structured_text():
         text, pages, file_type = extract_text(file=mock_file)
         assert "Columns" in text
         assert file_type == "csv"
-
-
-# ---- Factory Tests ----
 
 
 def test_unsupported_file_type_raises_error():

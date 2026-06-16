@@ -1,7 +1,3 @@
-# utils/metrics.py
-# Performance and usage tracking
-# Tracks latency, token costs, feedback quality, error rates
-
 import time
 from dataclasses import dataclass, field
 from typing import List
@@ -92,7 +88,7 @@ class SessionMetrics:
 
 
 class Timer:
-    
+
     def __enter__(self):
         self.start = time.perf_counter()
         self.duration_ms = 0.0

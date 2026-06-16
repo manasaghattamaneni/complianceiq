@@ -1,16 +1,8 @@
-# core/ingestion.py
-# Multi-format document ingestion using Factory Pattern
-# Supports: PDF, DOCX, TXT, CSV
-# Each format has its own reader function
-# extract_text() is the single entry point for all formats
-
 import fitz
 import pandas as pd
 from docx import Document
 from utils.logger import logger
 from utils.metrics import Timer
-
-# ---- Individual Readers (one per format) ----
 
 
 def _read_pdf(file) -> tuple[str, int]:
@@ -77,14 +69,11 @@ def _read_csv(file) -> tuple[str, int]:
     """
     df = pd.read_csv(file)
 
-    # Convert DataFrame to readable text
-    # Include column names + all rows
     lines = []
     lines.append(f"Columns: {', '.join(df.columns.tolist())}")
     lines.append(f"Total rows: {len(df)}")
     lines.append("")
 
-    # Add each row as readable text
     for _, row in df.iterrows():
         row_text = " | ".join(
             [f"{col}: {val}" for col, val in row.items() if pd.notna(val)]
@@ -95,9 +84,6 @@ def _read_csv(file) -> tuple[str, int]:
     estimated_pages = max(1, len(df) // 50)
 
     return full_text, estimated_pages
-
-
-# ---- Factory Function (single entry point) ----
 
 
 def extract_text(file) -> tuple[str, int, str]:

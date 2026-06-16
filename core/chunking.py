@@ -1,4 +1,3 @@
-# core/chunking.py
 import re
 from config import (
     DEFAULT_CHUNK_SIZE,
