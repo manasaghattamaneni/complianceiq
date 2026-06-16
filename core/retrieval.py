@@ -4,7 +4,7 @@
 import time
 import chromadb
 from dataclasses import dataclass
-from config import COLLECTION_PREFIX, MAX_RETRIEVAL_RESULTS
+from config import COLLECTION_PREFIX, MAX_RETRIEVAL_RESULTS, CHROMA_DB_PATH
 from utils.logger import logger
 from utils.metrics import Timer
 
@@ -29,14 +29,17 @@ class DocumentRepository:
         results = repo.search("password requirements", ["pci_dss"])
     """
 
-    def __init__(self):
+    def __init__(self, path: str = CHROMA_DB_PATH):
         """
         Initialize ChromaDB with persistent storage.
-        Data saved to ./chroma_db folder - survives restarts.
+        Data is saved to ``path`` and survives restarts.
+
+        ``path`` is injectable so tests can point at a temp directory
+        instead of polluting the real ./chroma_db store.
         """
-        self._client = chromadb.PersistentClient(path="./chroma_db")
+        self._client = chromadb.PersistentClient(path=path)
         self._collections: dict[str, object] = {}
-        logger.info("repository_initialized", storage="persistent", path="./chroma_db")
+        logger.info("repository_initialized", storage="persistent", path=path)
 
     def store_document(
         self,
@@ -48,49 +51,43 @@ class DocumentRepository:
     ) -> int:
         """
         Store document chunks in ChromaDB.
-
-        Args:
-            doc_id:    unique identifier for this document
-            chunks:    list of text chunks
-            doc_name:  original filename for display
-            pages:     page count, persisted for session restore
-            file_type: file extension, persisted for session restore
-
-        Returns:
-            number of chunks stored
+        Deletes any existing collection with this exact doc_id
+        before creating the new one — ensures clean re-upload.
         """
         with Timer() as t:
             try:
                 collection_name = f"{COLLECTION_PREFIX}{doc_id}"
 
-                # This ensures clean state on re-upload
                 try:
                     self._client.delete_collection(collection_name)
                     logger.info("existing_collection_deleted", name=collection_name)
                 except Exception:
-                    pass  # collection didn't exist — that's fine
+                    pass
 
                 collection = self._client.create_collection(
                     name=collection_name,
                     metadata={
                         "doc_name": doc_name,
                         "hnsw:space": "cosine",
-                        "pages": str(pages) if pages else "0",
-                        "file_type": file_type if file_type else "unknown",
+                        "pages": str(pages),
+                        "file_type": file_type,
                         "created_at": str(time.time()),
                     },
                 )
 
-                for i, chunk in enumerate(chunks):
+                # Single batched insert — embeds all chunks in one pass
+                # instead of one (slow) embedding call per chunk.
+                if chunks:
                     collection.add(
-                        documents=[chunk],
-                        ids=[f"chunk_{i}"],
+                        documents=list(chunks),
+                        ids=[f"chunk_{i}" for i in range(len(chunks))],
                         metadatas=[
                             {
                                 "doc_name": doc_name,
                                 "chunk_index": i,
                                 "chunk_length": len(chunk),
                             }
+                            for i, chunk in enumerate(chunks)
                         ],
                     )
 
@@ -137,9 +134,13 @@ class DocumentRepository:
                         logger.warning("collection_not_found", doc_id=doc_id)
                         continue
 
+                    count = collection.count()
+                    if count == 0:
+                        continue
+
                     raw = collection.query(
                         query_texts=[question],
-                        n_results=min(n_results, len(collection.get()["ids"])),
+                        n_results=min(n_results, count),
                     )
 
                     chunks = raw["documents"][0]
@@ -266,3 +267,60 @@ class DocumentRepository:
         except Exception as e:
             logger.log_error("restore_failed", e)
             return []
+
+    def get_all_chunks(self, doc_id: str) -> list[str]:
+        """
+        Return all chunks for a document.
+        Used by map-reduce operations that need every chunk,
+        not just top-k search results.
+        Keeps ChromaDB encapsulated inside this file.
+        """
+        collection = self._collections.get(doc_id)
+        if not collection:
+            return []
+        data = collection.get()
+        ids = data["ids"]
+        documents = data["documents"]
+
+        # ChromaDB.get() does not guarantee insertion order, and ids sort
+        # lexicographically (chunk_10 < chunk_2). Reorder by the numeric
+        # suffix so map-reduce sees chunks in document order.
+        def _chunk_index(chunk_id: str) -> int:
+            try:
+                return int(chunk_id.rsplit("_", 1)[1])
+            except (IndexError, ValueError):
+                return 0
+
+        ordered = sorted(zip(ids, documents), key=lambda pair: _chunk_index(pair[0]))
+        return [doc for _, doc in ordered]
+
+    def remove_slot_documents(self, slot_prefix: str) -> int:
+        """
+        Remove all collections belonging to a given upload slot
+        (e.g. 'doc1' or 'doc2') before storing a new document there.
+        Prevents orphaned collections when a different file is
+        uploaded to the same UI slot — production use case only,
+        not used by the generic repository tests.
+
+        Returns count of collections removed.
+        """
+        removed = 0
+        try:
+            existing = self._client.list_collections()
+            for col in existing:
+                name_without_prefix = col.name[len(COLLECTION_PREFIX) :]
+                if name_without_prefix.startswith(f"{slot_prefix}_"):
+                    try:
+                        self._client.delete_collection(col.name)
+                        self._collections.pop(name_without_prefix, None)
+                        removed += 1
+                        logger.info(
+                            "stale_slot_collection_deleted",
+                            name=col.name,
+                            slot=slot_prefix,
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.log_error("remove_slot_documents_failed", e)
+        return removed

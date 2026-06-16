@@ -48,7 +48,6 @@ class SecurityValidator:
         Check file is under size limit.
         Raises SecurityError if too large.
         """
-        # file.size is in bytes
         size_mb = file.size / (1024 * 1024)
 
         if file.size > MAX_FILE_SIZE_BYTES:

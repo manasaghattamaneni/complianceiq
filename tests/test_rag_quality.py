@@ -8,9 +8,15 @@ from core.ai_engine import AIEngine
 
 
 @pytest.fixture
-def repo():
+def chroma_path(tmp_path):
+    """Isolated on-disk store per test — never touches the real ./chroma_db."""
+    return str(tmp_path / "chroma")
 
-    repository = DocumentRepository()
+
+@pytest.fixture
+def repo(chroma_path):
+
+    repository = DocumentRepository(path=chroma_path)
     yield repository
     repository.clear_all()  # cleanup after each test
 
@@ -158,14 +164,14 @@ def test_multi_doc_search(repo):
     assert "pci.txt" in doc_names
 
 
-def test_restore_collections_round_trips_metadata(repo):
+def test_restore_collections_round_trips_metadata(repo, chroma_path):
     """pages/file_type persisted on store should survive restore."""
     text = "Compliance requirement text. " * 50
     chunks = split_into_chunks(text)
     repo.store_document("restore_doc", chunks, "report.pdf", pages=7, file_type="pdf")
 
     # A fresh repository instance reads from the same persistent store
-    fresh = DocumentRepository()
+    fresh = DocumentRepository(path=chroma_path)
     restored = fresh.restore_collections()
 
     match = next(d for d in restored if d["doc_id"] == "restore_doc")
@@ -173,6 +179,41 @@ def test_restore_collections_round_trips_metadata(repo):
     assert match["pages"] == 7
     assert match["file_type"] == "pdf"
     assert match["chunks"] == len(chunks)
+
+
+def test_get_all_chunks_returns_every_chunk_in_order(repo):
+    """get_all_chunks must return all chunks ordered by chunk index, not top-k."""
+    chunks = [f"Compliance requirement number {i:02d}. " * 5 for i in range(15)]
+    repo.store_document("ordered_doc", chunks, "ordered.txt")
+
+    retrieved = repo.get_all_chunks("ordered_doc")
+
+    assert len(retrieved) == len(chunks)
+    # chunk_10 must not sort before chunk_2 — verify true document order
+    assert retrieved == chunks
+
+
+def test_get_all_chunks_missing_doc_returns_empty(repo):
+    assert repo.get_all_chunks("nope") == []
+
+
+def test_remove_slot_documents_clears_only_that_slot(repo):
+    """Uploading a new file to a slot must purge stale collections in that slot."""
+    text = "Slot content for compliance testing. " * 50
+    chunks = split_into_chunks(text)
+
+    # Two different files that landed in the same UI slot over time
+    repo.store_document("doc1_oldhash", chunks, "old.txt")
+    repo.store_document("doc1_newhash", chunks, "new.txt")
+    repo.store_document("doc2_keep", chunks, "other.txt")
+
+    removed = repo.remove_slot_documents("doc1")
+
+    assert removed == 2
+    ids = repo.get_document_ids()
+    assert "doc1_oldhash" not in ids
+    assert "doc1_newhash" not in ids
+    assert "doc2_keep" in ids  # other slot untouched
 
 
 def test_mapreduce_checklist(loaded_repo):

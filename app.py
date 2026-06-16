@@ -2,6 +2,7 @@ import streamlit as st
 import time
 import hashlib
 import uuid
+import hmac
 from config import APP_NAME, APP_VERSION, RATE_LIMIT_SECONDS
 from core.security import SecurityValidator, SecurityError
 from core.ingestion import extract_text
@@ -11,7 +12,46 @@ from core.ai_engine import AIEngine
 from utils.logger import logger
 from utils.metrics import SessionMetrics, QueryMetric
 
+
+def check_password():
+    """
+    Simple password gate for the app.
+    Only active if APP_PASSWORD is set in secrets.
+    Running locally without setting it skips auth entirely —
+    useful for people cloning the repo to test with their own key.
+    """
+    app_password = st.secrets.get("APP_PASSWORD", None)
+
+    # No password configured — skip auth (local dev / cloned repo)
+    if not app_password:
+        return True
+
+    def password_entered():
+        if hmac.compare_digest(st.session_state["password_input"], app_password):
+            st.session_state["authenticated"] = True
+            del st.session_state["password_input"]
+        else:
+            st.session_state["authenticated"] = False
+
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.title("🔍 ComplianceIQ")
+    st.caption("Please enter the password to continue")
+    st.text_input(
+        "Password", type="password", on_change=password_entered, key="password_input"
+    )
+
+    if "authenticated" in st.session_state:
+        if not st.session_state["authenticated"]:
+            st.error("😕 Incorrect password")
+
+    return False
+
+
 st.set_page_config(page_title=APP_NAME, page_icon="🔍", layout="centered")
+if not check_password():
+    st.stop()
 
 
 def init_session():
@@ -31,6 +71,7 @@ def init_session():
         st.session_state.repo = DocumentRepository()
         if "documents" not in st.session_state:
             st.session_state.documents = {}
+        # Repopulate UI slots from any documents persisted on disk
         restored = st.session_state.repo.restore_collections()
         for i, doc in enumerate(restored):
             slot = f"doc{i + 1}"
@@ -97,11 +138,14 @@ def process_upload(uploaded_file, doc_slot: str):
 
         with st.spinner("Indexing document..."):
             chunks = split_into_chunks(text, file_type=file_type)
-            # Stable doc_id based on content hash — not session_id
-            # Same document content always gets the same doc_id
-            # Re-uploading replaces the old collection cleanly
             content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
             doc_id = f"{doc_slot}_{content_hash}"
+
+            # Remove any other collection in this slot before
+            # storing the new one — prevents orphans when a
+            # different file is uploaded to the same slot
+            st.session_state.repo.remove_slot_documents(doc_slot)
+
             st.session_state.repo.store_document(
                 doc_id, chunks, uploaded_file.name, pages=pages, file_type=file_type
             )
@@ -383,39 +427,45 @@ if st.session_state.documents:
 
         st.session_state.messages.append({"role": "user", "content": clean_question})
 
-        try:
-            start = time.perf_counter()
+        # Show user message immediately before the slow API call
+        with st.chat_message("user"):
+            st.markdown(clean_question)
 
-            response = st.session_state.engine.answer_question(clean_question, doc_ids)
-            duration_ms = (time.perf_counter() - start) * 1000
+        with st.chat_message("assistant"):
+            with st.spinner("🔍 Searching documents..."):
+                try:
+                    start = time.perf_counter()
+                    response = st.session_state.engine.answer_question(
+                        clean_question, doc_ids
+                    )
+                    duration_ms = (time.perf_counter() - start) * 1000
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": response.answer}
-            )
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": response.answer}
+                    )
 
-            st.session_state.metrics.add_query(
-                QueryMetric(
-                    question_length=len(clean_question),
-                    duration_ms=duration_ms,
-                    token_count=response.token_count,
-                    confidence_pct=response.top_confidence,
-                )
-            )
+                    st.session_state.metrics.add_query(
+                        QueryMetric(
+                            question_length=len(clean_question),
+                            duration_ms=duration_ms,
+                            token_count=response.token_count,
+                            confidence_pct=response.top_confidence,
+                        )
+                    )
 
-            logger.info("query_tokens", tokens=response.token_count)
+                    logger.info("query_tokens", tokens=response.token_count)
 
-        except Exception as e:
-            st.session_state.metrics.add_error()
-            logger.log_error("answer_question_ui_failed", e)
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": "❌ Something went wrong answering that. "
-                    "Please try again.",
-                }
-            )
+                except Exception as e:
+                    st.session_state.metrics.add_error()
+                    logger.log_error("answer_question_ui_failed", e)
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "❌ Something went wrong answering that. "
+                            "Please try again.",
+                        }
+                    )
 
-        # Single rerun — everything saved before this fires
         st.rerun()
 
 else:

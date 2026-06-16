@@ -33,7 +33,7 @@ class AIEngine:
         Repository is injected to allow testing with mock stores.
         """
         self._repo = repository
-        self._client = None  # lazy initialization
+        self._client = None
 
     def _get_client(self):
         """
@@ -239,20 +239,15 @@ Format each item as:
         """
         with Timer() as t:
             try:
-                collection = self._repo._collections.get(doc_id)
-                if not collection:
+                all_chunks = self._repo.get_all_chunks(doc_id)
+                if not all_chunks:
                     raise ValueError(f"Document {doc_id} not found in repository")
 
-                all_data = collection.get()
-                all_chunks = all_data["documents"]
                 total_chunks = len(all_chunks)
 
                 logger.info(
                     "mapreduce_started", doc_name=doc_name, total_chunks=total_chunks
                 )
-
-                if total_chunks == 0:
-                    raise ValueError("No chunks found for document")
 
                 batch_size = 10
                 partial_checklists = []
@@ -307,7 +302,7 @@ List each requirement as:
                 if not partial_checklists:
                     return AIResponse(
                         answer="No compliance requirements found " "in this document.",
-                        token_count=0,
+                        token_count=total_tokens,
                         top_confidence=0.0,
                         sources=[],
                     )

@@ -46,6 +46,7 @@ complianceiq/
 - **Repository pattern for retrieval** — nothing outside `retrieval.py` knows ChromaDB exists, so the vector backend is swappable.
 - **Chunking as a strategy, not an afterthought** — sentence-aware splitting (regex-based, O(n)) for large legal documents, row-based chunking for CSVs that repeats column headers in every chunk, and character-based splitting with overlap for everything else.
 - **Grounded retrieval** — cosine-similarity search returns the top chunks, which are injected into a system prompt that constrains the model to the provided context to reduce hallucination on compliance content.
+- **Map-reduce for full-document coverage** — checklist generation doesn't rely on top-k retrieval alone: it batches *every* chunk through a map step (extract requirements per batch) and a reduce step (merge and deduplicate), so nothing is missed on long documents.
 - **Operability built in** — structured JSON logging, rotating log files, an input-validation layer, and a test suite.
 
 ---
@@ -134,13 +135,19 @@ pytest -v
 
 This is a single-user prototype. The following are deliberate scope boundaries — the things I would address before calling it production-ready:
 
-- **Persistence** — the vector store is currently in-memory (`chromadb.Client()`), so indexed documents are lost on restart. *Next step:* switch to `PersistentClient` (or a Chroma server / pgvector) and add TTL-based cleanup of stale collections.
+- **Persistence & tenant isolation** — documents persist to disk via `chromadb.PersistentClient`, but the storage is process-global, not scoped per user. To prevent cross-session document exposure, the app does **not** auto-restore documents into the UI on a new 
+  browser session — each session starts clean and re-uploads as needed. Persistence currently protects against process restarts, 
+  not concurrent multi-tenant isolation. *Next step:* namespace collections by authenticated user id to enable safe cross-session 
+  restore per user.
 - **Authentication & cost control** — the app has no auth and only a lightweight per-session rate limit. A public deployment calling a paid API needs real auth and a hard token/spend budget. *Next step:* put auth in front (reverse proxy or Streamlit auth) and enforce a daily token ceiling.
-- **Whole-document tasks** — checklist and gap analysis currently operate over the top retrieved chunks rather than the entire document, so they favor precision over completeness. *Next step:* map-reduce over all chunks and surface truncation when the model hits `max_tokens`.
+- **Whole-document tasks** — checklist generation runs a map-reduce over *every* chunk (see below), but gap analysis and single-document checklists still operate over the top retrieved chunks, favoring precision over completeness. *Next step:* extend map-reduce to gap analysis and surface truncation when the model hits `max_tokens`.
 - **Upload hardening** — uploads are capped at 10 MB and validated by extension. *Next step:* add magic-byte sniffing and decompressed-size limits to defend against malformed files and decompression bombs.
 - **Prompt-injection surface** — uploaded document text is passed into the model prompt as context, so a malicious document could attempt to steer the model (indirect prompt injection). The system prompt constrains responses to the provided context, but content is not otherwise sanitized. *Next step:* treat document text as untrusted, sanitize rendered output (strip image/link markdown to prevent data exfiltration), and add output-side guardrails.
-- **Scalability** — the in-memory store limits the app to a single process/replica. Externalizing the vector store (above) is the prerequisite for horizontal scaling.
-
+- **Scalability** — the local `PersistentClient` store (SQLite-backed, single path) limits the app to a single process/replica. Externalizing the vector store (a Chroma server / pgvector) is the prerequisite for horizontal scaling.
+- **Whole-document tasks** — checklist generation runs a map-reduce over *every* chunk (sequential batches of 10, no retry/backoff), 
+  which trades speed and API cost for completeness. Gap analysis and single-document checklists still use top-k retrieval. 
+  *Next step:* extend map-reduce to gap analysis, add async batching with retry handling for large documents, and surface truncation 
+  when the model hits `max_tokens`.
 ---
 
 ## License
