@@ -135,19 +135,12 @@ pytest -v
 
 This is a single-user prototype. The following are deliberate scope boundaries — the things I would address before calling it production-ready:
 
-- **Persistence & tenant isolation** — documents persist to disk via `chromadb.PersistentClient`, but the storage is process-global, not scoped per user. To prevent cross-session document exposure, the app does **not** auto-restore documents into the UI on a new 
-  browser session — each session starts clean and re-uploads as needed. Persistence currently protects against process restarts, 
-  not concurrent multi-tenant isolation. *Next step:* namespace collections by authenticated user id to enable safe cross-session 
-  restore per user.
+- **Persistence & tenant isolation** — documents persist to disk via `chromadb.PersistentClient`, but the storage is process-global, not scoped per user. To prevent cross-session document exposure, the app does **not** auto-restore documents into the UI on a new browser session — each session starts clean and re-uploads as needed. Persistence currently protects against process restarts, not concurrent multi-tenant isolation. *Next step:* namespace collections by authenticated user id to enable safe cross-session restore per user.
 - **Authentication & cost control** — the app has no auth and only a lightweight per-session rate limit. A public deployment calling a paid API needs real auth and a hard token/spend budget. *Next step:* put auth in front (reverse proxy or Streamlit auth) and enforce a daily token ceiling.
 - **Whole-document tasks** — checklist generation runs a map-reduce over *every* chunk (see below), but gap analysis and single-document checklists still operate over the top retrieved chunks, favoring precision over completeness. *Next step:* extend map-reduce to gap analysis and surface truncation when the model hits `max_tokens`.
 - **Upload hardening** — uploads are capped at 10 MB and validated by extension. *Next step:* add magic-byte sniffing and decompressed-size limits to defend against malformed files and decompression bombs.
 - **Prompt-injection surface** — uploaded document text is passed into the model prompt as context, so a malicious document could attempt to steer the model (indirect prompt injection). The system prompt constrains responses to the provided context, but content is not otherwise sanitized. *Next step:* treat document text as untrusted, sanitize rendered output (strip image/link markdown to prevent data exfiltration), and add output-side guardrails.
 - **Scalability** — the local `PersistentClient` store (SQLite-backed, single path) limits the app to a single process/replica. Externalizing the vector store (a Chroma server / pgvector) is the prerequisite for horizontal scaling.
-- **Whole-document tasks** — checklist generation runs a map-reduce over *every* chunk (sequential batches of 10, no retry/backoff), 
-  which trades speed and API cost for completeness. Gap analysis and single-document checklists still use top-k retrieval. 
-  *Next step:* extend map-reduce to gap analysis, add async batching with retry handling for large documents, and surface truncation 
-  when the model hits `max_tokens`.
 ---
 
 ## License
